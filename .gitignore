@@ -171,12 +171,17 @@ cython_debug/
 .pypirc
 
 
-# cache
+# pycache
 mode2/__pycache__/
+__pycache__/
+*.py[cod]
 
-# key
+# config
 mode2/config.yaml
 
 # his
 mode2/his.json
+mode2/sub.json
+mode2/floor_offset.json
 mode2/plot
+
