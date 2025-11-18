@@ -541,7 +541,7 @@ class Elect_plot:
             method="pchip",
             points_count=300,
             trend_mode="ma",
-            ma_window=max(3, moving_avg_window),
+            ma_window=max(3, moving_avg_window)+3, # 这里将ma_window调大，让趋势线更平滑
         )
 
         # --- 4. 绘图 ---
@@ -555,26 +555,28 @@ class Elect_plot:
         fig, ax = plt.subplots(figsize=(12, 7))
 
         # 柱状图：每小时平均消耗率
-        ax.bar(
+        bars = ax.bar(
             midpoint_timestamps,
             consumption_rates,
             width=[w * 0.8 for w in time_period_durations_day],
             label="每小时平均消耗率",
             color="skyblue",
             edgecolor="none",
+            zorder=1,
         )
 
         # 曲线1：穿点平滑曲线（PCHIP + raw）
-        ax.plot(
+        line_raw, = ax.plot(
             x_smooth_raw,
             y_smooth_raw,
             label="消耗变化曲线",
             color="royalblue",
             linewidth=2,
+            zorder=3,
         )
 
         # 曲线2：趋势线（PCHIP + MA，细虚线）
-        ax.plot(
+        line_ma, = ax.plot(
             x_smooth_ma,
             y_smooth_ma,
             label="消耗趋势",
@@ -582,6 +584,7 @@ class Elect_plot:
             linewidth=1.8,
             linestyle="--",
             alpha=0.9,
+            zorder=2,
         )
 
         # 格式化图表
@@ -593,7 +596,10 @@ class Elect_plot:
         )
         ax.set_xlabel("时间段中点", fontproperties=my_font, fontsize=12)
         ax.set_ylabel("每小时电费消耗 (元/小时)", fontproperties=my_font, fontsize=12)
-        ax.legend(prop=my_font)
+        ax.legend(
+            [bars, line_raw, line_ma],
+            labels=["每小时平均消耗率", "消耗变化曲线", "消耗趋势"],
+            prop=my_font)
         ax.grid(True, which="both", linestyle="--", linewidth=0.5, axis="y")
 
         # 右下角标注过滤信息
