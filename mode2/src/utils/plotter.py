@@ -118,7 +118,9 @@ class Elect_plot:
             return {"code": 102, "info": f"房间「{room_name}」在近 {time_span} 小时内数据点不足 (仅 {len(room_data)} 个)，无法绘制曲线"}
 
         # 【新增】异常值过滤
+        original_count = len(room_data)
         room_data = self._filter_outliers_with_MAD(room_data, threshold=3.0, window_size=10)
+        filtered_count = len(room_data)
         
         if len(room_data) < 2:
             return {"code": 102, "info": f"过滤异常值后数据点不足 (仅 {len(room_data)} 个)，无法绘制曲线"}
@@ -162,6 +164,33 @@ class Elect_plot:
         ax.set_xlabel("时间", fontproperties=my_font, fontsize=12)
         ax.set_ylabel("剩余电费 (元)", fontproperties=my_font, fontsize=12)
         ax.legend(prop=my_font)
+        removed_points = original_count - filtered_count
+        if removed_points > 0:
+            ax.text(
+                0.99,
+                0.02,
+                f"过滤 {removed_points} 个异常数据",
+                transform=ax.transAxes,
+                ha="right",
+                va="bottom",
+                fontsize=9,
+                color="#888888",
+                style="italic",
+                fontdict={"fontproperties": my_font}
+            )
+        else:
+            ax.text(
+                0.99,
+                0.02,
+                f"无异常数据",
+                transform=ax.transAxes,
+                ha="right",
+                va="bottom",
+                fontsize=9,
+                color="#888888",
+                style="italic",
+                fontdict={"fontproperties": my_font}
+            )
         ax.grid(True, which='both', linestyle='--', linewidth=0.5)
 
         # 格式化X轴的时间显示
@@ -341,19 +370,28 @@ class Elect_plot:
 
         return {"code": 100, "info": "绘图成功", "path": filepath}
     
-    def _filter_outliers_with_MAD(self, data: List[Dict], threshold: float = 3.0, window_size: int = 10) -> List[Dict]:
+    def _filter_outliers_with_MAD(
+        self,
+        data: List[Dict],
+        threshold: float = 3.0,
+        window_size: int = 10,
+        recharge_buffer: float = 500.0,
+        recharge_points: int = 5
+    ) -> List[Dict]:
         """
         使用滑动窗口MAD (Median Absolute Deviation) 算法过滤异常值。
         
         算法特点：
         1. 对每个数据点使用其周围窗口内的数据计算MAD
-        2. 自动识别并保留充值数据（value上升的点）
+        2. 对突然上升的数据点给予豁免（更大的容忍度），并在随后若干点继续缓冲
         3. 过滤掉异常的低值或高值波动
         
         Args:
             data (List[Dict]): 原始历史数据，格式为 [{"timestamp": str, "value": float}, ...]
             threshold (float): MAD倍数阈值，默认3.0。越大越宽松
             window_size (int): 滑动窗口大小，默认10。必须>=3
+            recharge_buffer (float): 允许突增点超出上界的缓冲值
+            recharge_points (int): 突增后额外豁免的连续数据点数量
             
         Returns:
             List[Dict]: 过滤后的数据列表
@@ -362,11 +400,11 @@ class Elect_plot:
             pylog.warning(f"数据点不足3个（当前{len(data)}个），跳过异常值过滤")
             return data
         
-        # 提取value值用于计算
         values = [d["value"] for d in data]
-        filtered_indices = [] # 保留的数据索引
+        filtered_indices: List[int] = []
         
-        half_window = window_size // 2
+        half_window = max(1, window_size // 2)
+        recharge_countdown = 0
         
         for i in range(len(values)):
             # 定义窗口范围
@@ -374,9 +412,10 @@ class Elect_plot:
             end_idx = min(len(values), i + half_window + 1)
             window_data = values[start_idx:end_idx]
             
-            # 计算窗口内的中位数和MAD
             median_val = np.median(window_data)
             mad = np.median([abs(v - median_val) for v in window_data])
+            if mad == 0:
+                mad = 1e-6
             
             # 计算上下界
             upper_bound = median_val + threshold * mad
@@ -384,10 +423,32 @@ class Elect_plot:
             
             # 判断是否为异常值
             current_value = values[i]
+            prev_value = values[i - 1] if i > 0 else None
             
-            # 特判：如果是充值（value上升），则保留
-            if i > 0 and current_value > values[i-1]:
-                filtered_indices.append(i)
+            # 低值直接视为异常
+            if current_value < lower_bound:
+                pylog.info(
+                    f"过滤异常值: 时间={data[i]['timestamp']}, 值={current_value:.2f}, "
+                    f"界限=[{lower_bound:.2f}, {upper_bound:.2f}]"
+                )
+                continue
+            
+            # 高值异常，判断是否属于充值突增
+            if current_value > upper_bound:
+                is_recharge = (
+                    prev_value is not None
+                    and current_value > prev_value
+                    and (current_value - upper_bound) <= recharge_buffer
+                )
+                if is_recharge or recharge_countdown > 0:
+                    recharge_countdown = recharge_points
+                    filtered_indices.append(i)
+                    continue
+                
+                pylog.info(
+                    f"过滤异常值: 时间={data[i]['timestamp']}, 值={current_value:.2f}, "
+                    f"界限=[{lower_bound:.2f}, {upper_bound:.2f}]"
+                )
                 continue
             
             # 正常判断：在界限内则保留
@@ -396,6 +457,10 @@ class Elect_plot:
             else:
                 pylog.info(f"过滤异常值: 时间={data[i]['timestamp']}, 值={current_value:.2f}, "
                            f"界限=[{lower_bound:.2f}, {upper_bound:.2f}]")
+                continue
+            
+            if recharge_countdown > 0:
+                recharge_countdown -= 1
         
         # 根据保留的索引构建过滤后的数据
         filtered_data = [data[i] for i in filtered_indices]
@@ -404,3 +469,4 @@ class Elect_plot:
             pylog.info(f"异常值过滤完成: {len(data)} -> {len(filtered_data)} (过滤了 {len(data)-len(filtered_data)} 个异常点)")
         
         return filtered_data
+
