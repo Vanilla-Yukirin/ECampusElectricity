@@ -23,14 +23,14 @@ pylog.basicConfig(
 from datetime import datetime, timedelta
 import asyncio
 from botpy.ext.cog_yaml import read
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 import matplotlib
 matplotlib.use('Agg') # 使用非交互式后端，适用于服务器环境
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import numpy as np
-from scipy.interpolate import make_interp_spline
+from scipy.interpolate import make_interp_spline, Akima1DInterpolator, PchipInterpolator
 import seaborn as sns
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -129,20 +129,13 @@ class Elect_plot:
         timestamps = [datetime.strptime(d["timestamp"], self.TIME_FORMAT) for d in room_data]
         values = [d["value"] for d in room_data]
 
-        # 创建平滑曲线 (样条插值)
-        # datetime转为matplotlib能理解的数值格式
-        x_numeric = mdates.date2num(timestamps)
-        
-        # 让曲线更平滑
-        x_smooth_numeric = np.linspace(x_numeric.min(), x_numeric.max(), 300)
-        
-        # 创建样条函数
-        # k=min(3, len(x_numeric) - 1) 确保样条阶数不大于数据点数-1
-        spl = make_interp_spline(x_numeric, values, k=min(3, len(x_numeric) - 1))
-        y_smooth = spl(x_smooth_numeric)
-
-        # 将平滑的x轴数值转回datetime对象用于绘图
-        x_smooth = mdates.num2date(x_smooth_numeric)
+        # 生成平滑曲线坐标（可选择 akima / pchip）
+        x_smooth, y_smooth = self._generate_smooth_curve(
+            room_data,
+            # method="akima",
+            method="pchip",
+            points_count=300
+        )
 
         # 4. 绘图
         font_path = os.path.join("assets", "fonts", "YaHei Ubuntu Mono.ttf")
@@ -218,6 +211,48 @@ class Elect_plot:
             plt.close(fig)
 
         return {"code": 100, "info": "绘图成功", "path": filepath}
+    
+    def _generate_smooth_curve(
+        self,
+        filtered_data: List[Dict],
+        method: str = "akima",
+        points_count: int = 300
+    ) -> Tuple[List[datetime], np.ndarray]:
+        """
+        基于过滤后的数据生成平滑曲线坐标。
+        
+        Args:
+            filtered_data: 已经过滤异常值后的数据
+            method: 'akima' 或 'pchip'
+            points_count: 插值后的点数，越多越平滑
+        
+        Returns:
+            (x_smooth_dates, y_smooth_values)
+        """
+        if not filtered_data or len(filtered_data) < 2:
+            return [], np.array([])
+
+        try:
+            timestamps = [datetime.strptime(d["timestamp"], self.TIME_FORMAT) for d in filtered_data]
+        except (TypeError, ValueError):
+            timestamps = [d["timestamp"] for d in filtered_data]
+
+        values = [d["value"] for d in filtered_data]
+        x_numeric = mdates.date2num(timestamps)
+        y_values = np.array(values, dtype=float)
+
+        x_smooth_numeric = np.linspace(x_numeric.min(), x_numeric.max(), points_count)
+
+        if method == "akima":
+            interpolator = Akima1DInterpolator(x_numeric, y_values)
+        elif method == "pchip":
+            interpolator = PchipInterpolator(x_numeric, y_values)
+        else:
+            raise ValueError("method must be 'akima' or 'pchip'")
+
+        y_smooth = interpolator(x_smooth_numeric)
+        x_smooth_dates = mdates.num2date(x_smooth_numeric)
+        return x_smooth_dates, y_smooth
     # 柱状
     def plot_consumption_histogram(self, room_name: str, time_span: int = 48, moving_avg_window: int = 5) -> Dict:
         """
