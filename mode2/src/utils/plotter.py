@@ -156,8 +156,14 @@ class Elect_plot:
         sns.set_theme(style="darkgrid")
         fig, ax = plt.subplots(figsize=(12, 7))
 
-        # 绘制原始数据点
-        ax.scatter(timestamps, values, label="实际数据点", color='red', zorder=5)
+        # 0. 绘制原始数据点
+        if len(timestamps) >=150:
+            # 时间跨度较长，不画数据点
+            pass
+        else:
+            # 动态计算点的大小：基础大小 40，随着点数增加而减小，最少不小于 10
+            point_size = max(10, 40 - 0.1 * len(timestamps)) 
+            ax.scatter(timestamps, values, label="实际数据点", color='red', s=point_size, zorder=5)
         # 曲线1：穿点平滑曲线（PCHIP + raw）
         ax.plot(
             x_smooth_raw,
@@ -187,7 +193,7 @@ class Elect_plot:
             ax.text(
                 0.99,
                 0.02,
-                f"过滤 {removed_points} 个异常数据",
+                f"有效数据点 {filtered_count}, 过滤 {removed_points} 个异常数据",
                 transform=ax.transAxes,
                 ha="right",
                 va="bottom",
@@ -200,7 +206,7 @@ class Elect_plot:
             ax.text(
                 0.99,
                 0.02,
-                f"无异常数据",
+                f"有效数据点 {filtered_count}, 无异常数据",
                 transform=ax.transAxes,
                 ha="right",
                 va="bottom",
