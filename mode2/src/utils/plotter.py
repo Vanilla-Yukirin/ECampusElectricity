@@ -79,7 +79,7 @@ class Elect_plot:
             return False
         
     
-    # plot
+    # 画历史曲线
     def plot_history(self, room_name: str, time_span: int = 48) -> Dict:
         """
         绘制近time_span小时内的数据点的曲线图
@@ -125,16 +125,25 @@ class Elect_plot:
         if len(room_data) < 2:
             return {"code": 102, "info": f"过滤异常值后数据点不足 (仅 {len(room_data)} 个)，无法绘制曲线"}
 
-        # 准备绘图
+        # 准备绘图：原始时间与数值
         timestamps = [datetime.strptime(d["timestamp"], self.TIME_FORMAT) for d in room_data]
         values = [d["value"] for d in room_data]
 
-        # 生成平滑曲线坐标（可选择 akima / pchip）
-        x_smooth, y_smooth = self._generate_smooth_curve(
+        # 曲线1：通过所有点的平滑曲线（PCHIP + raw）
+        x_smooth_raw, y_smooth_raw = self._generate_smooth_curve(
             room_data,
-            # method="akima",
             method="pchip",
-            points_count=300
+            points_count=300,
+            trend_mode="raw",
+        )
+
+        # 曲线2：趋势线（PCHIP + MA，窗口=3）
+        x_smooth_ma, y_smooth_ma = self._generate_smooth_curve(
+            room_data,
+            method="pchip",
+            points_count=300,
+            trend_mode="ma",
+            ma_window=3,
         )
 
         # 4. 绘图
@@ -149,8 +158,24 @@ class Elect_plot:
 
         # 绘制原始数据点
         ax.scatter(timestamps, values, label="实际数据点", color='red', zorder=5)
-        # 绘制平滑曲线
-        ax.plot(x_smooth, y_smooth, label="电费变化趋势", color='royalblue', linewidth=2)
+        # 曲线1：穿点平滑曲线（PCHIP + raw）
+        ax.plot(
+            x_smooth_raw,
+            y_smooth_raw,
+            label="电费变化曲线",
+            color='royalblue',
+            linewidth=2,
+        )
+        # 曲线2：趋势线（PCHIP + MA，细虚线）
+        ax.plot(
+            x_smooth_ma,
+            y_smooth_ma,
+            label="趋势线",
+            color='royalblue',
+            linewidth=1.2,
+            linestyle="--",
+            alpha=0.9,
+        )
         
         # 格式化图表
         ax.set_title(f'房间「{room_name}」近 {time_span} 小时电费历史', fontproperties=my_font, fontsize=16, pad=20)
@@ -212,19 +237,127 @@ class Elect_plot:
 
         return {"code": 100, "info": "绘图成功", "path": filepath}
     
+    # 异常值过滤 滑动窗口MAD+充值豁免
+    def _filter_outliers_with_MAD(
+        self,
+        data: List[Dict],
+        threshold: float = 3.0,
+        window_size: int = 10,
+        recharge_buffer: float = 500.0,
+        recharge_points: int = 5
+    ) -> List[Dict]:
+        """
+        使用滑动窗口MAD (Median Absolute Deviation) 算法过滤异常值。
+        
+        算法特点：
+        1. 对每个数据点使用其周围窗口内的数据计算MAD
+        2. 对突然上升的数据点给予豁免（更大的容忍度），并在随后若干点继续缓冲
+        3. 过滤掉异常的低值或高值波动
+        
+        Args:
+            data (List[Dict]): 原始历史数据，格式为 [{"timestamp": str, "value": float}, ...]
+            threshold (float): MAD倍数阈值，默认3.0。越大越宽松
+            window_size (int): 滑动窗口大小，默认10。必须>=3
+            recharge_buffer (float): 允许突增点超出上界的缓冲值
+            recharge_points (int): 突增后额外豁免的连续数据点数量
+            
+        Returns:
+            List[Dict]: 过滤后的数据列表
+        """
+        if len(data) < 3:
+            pylog.warning(f"数据点不足3个（当前{len(data)}个），跳过异常值过滤")
+            return data
+        
+        values = [d["value"] for d in data]
+        filtered_indices: List[int] = []
+        
+        half_window = max(1, window_size // 2)
+        recharge_countdown = 0
+        
+        for i in range(len(values)):
+            # 定义窗口范围
+            start_idx = max(0, i - half_window)
+            end_idx = min(len(values), i + half_window + 1)
+            window_data = values[start_idx:end_idx]
+            
+            median_val = np.median(window_data)
+            mad = np.median([abs(v - median_val) for v in window_data])
+            if mad == 0:
+                mad = 1e-6
+            
+            # 计算上下界
+            upper_bound = median_val + threshold * mad
+            lower_bound = median_val - threshold * mad
+            
+            # 判断是否为异常值
+            current_value = values[i]
+            prev_value = values[i - 1] if i > 0 else None
+            
+            # 低值直接视为异常
+            if current_value < lower_bound:
+                pylog.info(
+                    f"过滤异常值: 时间={data[i]['timestamp']}, 值={current_value:.2f}, "
+                    f"界限=[{lower_bound:.2f}, {upper_bound:.2f}]"
+                )
+                continue
+            
+            # 高值异常，判断是否属于充值突增
+            if current_value > upper_bound:
+                is_recharge = (
+                    prev_value is not None
+                    and current_value > prev_value
+                    and (current_value - upper_bound) <= recharge_buffer
+                )
+                if is_recharge or recharge_countdown > 0:
+                    recharge_countdown = recharge_points
+                    filtered_indices.append(i)
+                    continue
+                
+                pylog.info(
+                    f"过滤异常值: 时间={data[i]['timestamp']}, 值={current_value:.2f}, "
+                    f"界限=[{lower_bound:.2f}, {upper_bound:.2f}]"
+                )
+                continue
+            
+            # 正常判断：在界限内则保留
+            if lower_bound <= current_value <= upper_bound:
+                filtered_indices.append(i)
+            else:
+                pylog.info(f"过滤异常值: 时间={data[i]['timestamp']}, 值={current_value:.2f}, "
+                           f"界限=[{lower_bound:.2f}, {upper_bound:.2f}]")
+                continue
+            
+            if recharge_countdown > 0:
+                recharge_countdown -= 1
+        
+        # 根据保留的索引构建过滤后的数据
+        filtered_data = [data[i] for i in filtered_indices]
+        
+        if len(filtered_data) < len(data):
+            pylog.info(f"异常值过滤完成: {len(data)} -> {len(filtered_data)} (过滤了 {len(data)-len(filtered_data)} 个异常点)")
+        
+        return filtered_data
+
+    # 生成多种平滑曲线数据
     def _generate_smooth_curve(
         self,
         filtered_data: List[Dict],
-        method: str = "akima",
-        points_count: int = 300
+        method: str = "pchip",
+        points_count: int = 300,
+        trend_mode: str = "raw",
+        ma_window: int = 3,
+        ema_alpha: float = 0.3,
     ) -> Tuple[List[datetime], np.ndarray]:
         """
         基于过滤后的数据生成平滑曲线坐标。
         
         Args:
             filtered_data: 已经过滤异常值后的数据
-            method: 'akima' 或 'pchip'
+            method: 'akima' 或 'pchip'，用于插值
             points_count: 插值后的点数，越多越平滑
+            trend_mode: 'raw' 原始值；'ma' 滑动平均；'ema' 指数平滑
+            ma_window: 'ma' 模式下的窗口大小（以点为单位）
+            ema_alpha: 'ema' 模式下的平滑系数 (0,1]
         
         Returns:
             (x_smooth_dates, y_smooth_values)
@@ -232,28 +365,58 @@ class Elect_plot:
         if not filtered_data or len(filtered_data) < 2:
             return [], np.array([])
 
+        # 1. 提取时间与数值
         try:
             timestamps = [datetime.strptime(d["timestamp"], self.TIME_FORMAT) for d in filtered_data]
         except (TypeError, ValueError):
             timestamps = [d["timestamp"] for d in filtered_data]
+        values = [float(d["value"]) for d in filtered_data]
 
-        values = [d["value"] for d in filtered_data]
+        # 2. 根据 trend_mode 生成趋势点
+        y_trend = np.array(values, dtype=float)
+
+        if trend_mode == "ma":
+            # 简单滑动平均（点窗口），两端用可用范围内的平均
+            window = max(1, int(ma_window))
+            half_w = window // 2
+            smoothed = []
+            for i in range(len(y_trend)):
+                start = max(0, i - half_w)
+                end = min(len(y_trend), i + half_w + 1)
+                smoothed.append(float(np.mean(y_trend[start:end])))
+            y_trend = np.array(smoothed, dtype=float)
+        elif trend_mode == "ema":
+            alpha = float(ema_alpha)
+            alpha = min(max(alpha, 0.0), 1.0)
+            if alpha <= 0.0:
+                alpha = 0.3
+            ema_vals = []
+            prev = y_trend[0]
+            ema_vals.append(prev)
+            for v in y_trend[1:]:
+                prev = alpha * v + (1.0 - alpha) * prev
+                ema_vals.append(prev)
+            y_trend = np.array(ema_vals, dtype=float)
+        else:
+            # raw: 不做额外平滑
+            pass
+
+        # 3. 对趋势点做插值
         x_numeric = mdates.date2num(timestamps)
-        y_values = np.array(values, dtype=float)
-
         x_smooth_numeric = np.linspace(x_numeric.min(), x_numeric.max(), points_count)
 
         if method == "akima":
-            interpolator = Akima1DInterpolator(x_numeric, y_values)
+            interpolator = Akima1DInterpolator(x_numeric, y_trend)
         elif method == "pchip":
-            interpolator = PchipInterpolator(x_numeric, y_values)
+            interpolator = PchipInterpolator(x_numeric, y_trend)
         else:
             raise ValueError("method must be 'akima' or 'pchip'")
 
         y_smooth = interpolator(x_smooth_numeric)
         x_smooth_dates = mdates.num2date(x_smooth_numeric)
         return x_smooth_dates, y_smooth
-    # 柱状
+    
+    # 画消耗曲线
     def plot_consumption_histogram(self, room_name: str, time_span: int = 48, moving_avg_window: int = 5) -> Dict:
         """
         绘制房间在近 time_span 小时内，每个有效时间段的平均电费消耗率柱状图。
@@ -405,103 +568,3 @@ class Elect_plot:
 
         return {"code": 100, "info": "绘图成功", "path": filepath}
     
-    def _filter_outliers_with_MAD(
-        self,
-        data: List[Dict],
-        threshold: float = 3.0,
-        window_size: int = 10,
-        recharge_buffer: float = 500.0,
-        recharge_points: int = 5
-    ) -> List[Dict]:
-        """
-        使用滑动窗口MAD (Median Absolute Deviation) 算法过滤异常值。
-        
-        算法特点：
-        1. 对每个数据点使用其周围窗口内的数据计算MAD
-        2. 对突然上升的数据点给予豁免（更大的容忍度），并在随后若干点继续缓冲
-        3. 过滤掉异常的低值或高值波动
-        
-        Args:
-            data (List[Dict]): 原始历史数据，格式为 [{"timestamp": str, "value": float}, ...]
-            threshold (float): MAD倍数阈值，默认3.0。越大越宽松
-            window_size (int): 滑动窗口大小，默认10。必须>=3
-            recharge_buffer (float): 允许突增点超出上界的缓冲值
-            recharge_points (int): 突增后额外豁免的连续数据点数量
-            
-        Returns:
-            List[Dict]: 过滤后的数据列表
-        """
-        if len(data) < 3:
-            pylog.warning(f"数据点不足3个（当前{len(data)}个），跳过异常值过滤")
-            return data
-        
-        values = [d["value"] for d in data]
-        filtered_indices: List[int] = []
-        
-        half_window = max(1, window_size // 2)
-        recharge_countdown = 0
-        
-        for i in range(len(values)):
-            # 定义窗口范围
-            start_idx = max(0, i - half_window)
-            end_idx = min(len(values), i + half_window + 1)
-            window_data = values[start_idx:end_idx]
-            
-            median_val = np.median(window_data)
-            mad = np.median([abs(v - median_val) for v in window_data])
-            if mad == 0:
-                mad = 1e-6
-            
-            # 计算上下界
-            upper_bound = median_val + threshold * mad
-            lower_bound = median_val - threshold * mad
-            
-            # 判断是否为异常值
-            current_value = values[i]
-            prev_value = values[i - 1] if i > 0 else None
-            
-            # 低值直接视为异常
-            if current_value < lower_bound:
-                pylog.info(
-                    f"过滤异常值: 时间={data[i]['timestamp']}, 值={current_value:.2f}, "
-                    f"界限=[{lower_bound:.2f}, {upper_bound:.2f}]"
-                )
-                continue
-            
-            # 高值异常，判断是否属于充值突增
-            if current_value > upper_bound:
-                is_recharge = (
-                    prev_value is not None
-                    and current_value > prev_value
-                    and (current_value - upper_bound) <= recharge_buffer
-                )
-                if is_recharge or recharge_countdown > 0:
-                    recharge_countdown = recharge_points
-                    filtered_indices.append(i)
-                    continue
-                
-                pylog.info(
-                    f"过滤异常值: 时间={data[i]['timestamp']}, 值={current_value:.2f}, "
-                    f"界限=[{lower_bound:.2f}, {upper_bound:.2f}]"
-                )
-                continue
-            
-            # 正常判断：在界限内则保留
-            if lower_bound <= current_value <= upper_bound:
-                filtered_indices.append(i)
-            else:
-                pylog.info(f"过滤异常值: 时间={data[i]['timestamp']}, 值={current_value:.2f}, "
-                           f"界限=[{lower_bound:.2f}, {upper_bound:.2f}]")
-                continue
-            
-            if recharge_countdown > 0:
-                recharge_countdown -= 1
-        
-        # 根据保留的索引构建过滤后的数据
-        filtered_data = [data[i] for i in filtered_indices]
-        
-        if len(filtered_data) < len(data):
-            pylog.info(f"异常值过滤完成: {len(data)} -> {len(filtered_data)} (过滤了 {len(data)-len(filtered_data)} 个异常点)")
-        
-        return filtered_data
-
