@@ -117,6 +117,12 @@ class Elect_plot:
         if len(room_data) < 2:
             return {"code": 102, "info": f"房间「{room_name}」在近 {time_span} 小时内数据点不足 (仅 {len(room_data)} 个)，无法绘制曲线"}
 
+        # 【新增】异常值过滤
+        room_data = self._filter_outliers_with_MAD(room_data, threshold=3.0, window_size=10)
+        
+        if len(room_data) < 2:
+            return {"code": 102, "info": f"过滤异常值后数据点不足 (仅 {len(room_data)} 个)，无法绘制曲线"}
+
         # 准备绘图
         timestamps = [datetime.strptime(d["timestamp"], self.TIME_FORMAT) for d in room_data]
         values = [d["value"] for d in room_data]
@@ -224,6 +230,12 @@ class Elect_plot:
         if len(room_data) < 2:
             return {"code": 102, "info": f"房间「{room_name}」在近 {time_span} 小时内数据点不足 (少于2个)，无法计算消耗"}
 
+        # 【新增】异常值过滤
+        room_data = self._filter_outliers_with_MAD(room_data, threshold=3.0, window_size=10)
+        
+        if len(room_data) < 2:
+            return {"code": 102, "info": f"过滤异常值后数据点不足 (少于2个)，无法计算消耗"}
+
         # --- 1. 计算每个有效时间段的消耗率和时间中点 ---
         consumption_rates = []
         midpoint_timestamps = []
@@ -328,3 +340,67 @@ class Elect_plot:
             plt.close(fig)
 
         return {"code": 100, "info": "绘图成功", "path": filepath}
+    
+    def _filter_outliers_with_MAD(self, data: List[Dict], threshold: float = 3.0, window_size: int = 10) -> List[Dict]:
+        """
+        使用滑动窗口MAD (Median Absolute Deviation) 算法过滤异常值。
+        
+        算法特点：
+        1. 对每个数据点使用其周围窗口内的数据计算MAD
+        2. 自动识别并保留充值数据（value上升的点）
+        3. 过滤掉异常的低值或高值波动
+        
+        Args:
+            data (List[Dict]): 原始历史数据，格式为 [{"timestamp": str, "value": float}, ...]
+            threshold (float): MAD倍数阈值，默认3.0。越大越宽松
+            window_size (int): 滑动窗口大小，默认10。必须>=3
+            
+        Returns:
+            List[Dict]: 过滤后的数据列表
+        """
+        if len(data) < 3:
+            pylog.warning(f"数据点不足3个（当前{len(data)}个），跳过异常值过滤")
+            return data
+        
+        # 提取value值用于计算
+        values = [d["value"] for d in data]
+        filtered_indices = [] # 保留的数据索引
+        
+        half_window = window_size // 2
+        
+        for i in range(len(values)):
+            # 定义窗口范围
+            start_idx = max(0, i - half_window)
+            end_idx = min(len(values), i + half_window + 1)
+            window_data = values[start_idx:end_idx]
+            
+            # 计算窗口内的中位数和MAD
+            median_val = np.median(window_data)
+            mad = np.median([abs(v - median_val) for v in window_data])
+            
+            # 计算上下界
+            upper_bound = median_val + threshold * mad
+            lower_bound = median_val - threshold * mad
+            
+            # 判断是否为异常值
+            current_value = values[i]
+            
+            # 特判：如果是充值（value上升），则保留
+            if i > 0 and current_value > values[i-1]:
+                filtered_indices.append(i)
+                continue
+            
+            # 正常判断：在界限内则保留
+            if lower_bound <= current_value <= upper_bound:
+                filtered_indices.append(i)
+            else:
+                pylog.info(f"过滤异常值: 时间={data[i]['timestamp']}, 值={current_value:.2f}, "
+                           f"界限=[{lower_bound:.2f}, {upper_bound:.2f}]")
+        
+        # 根据保留的索引构建过滤后的数据
+        filtered_data = [data[i] for i in filtered_indices]
+        
+        if len(filtered_data) < len(data):
+            pylog.info(f"异常值过滤完成: {len(data)} -> {len(filtered_data)} (过滤了 {len(data)-len(filtered_data)} 个异常点)")
+        
+        return filtered_data
