@@ -436,17 +436,16 @@ class Elect_plot:
                 - code: 121, info: "保存图片失败"
                 - code: 122, info: "字体文件找不到"
         """
-        # --- 0. 基本的数据寻找、过滤和初步验证 ---
         from matplotlib.font_manager import FontProperties
-        import pandas as pd
 
+        # --- 0. 基本的数据寻找、过滤和初步验证 ---
         sub_his = self._load_json_file(self.SUBSCRIPTION_HISTORY_FILE)
         now_time = datetime.now()
         room_data = None
         for item in sub_his:
             if item["name"] == room_name:
                 room_data = [
-                    d for d in item["his"] 
+                    d for d in item["his"]
                     if now_time - datetime.strptime(d["timestamp"], self.TIME_FORMAT) <= timedelta(hours=time_span)
                 ]
                 break
@@ -457,22 +456,18 @@ class Elect_plot:
         if len(room_data) < 2:
             return {"code": 102, "info": f"房间「{room_name}」在近 {time_span} 小时内数据点不足 (少于2个)，无法计算消耗"}
 
-        # 【新增】异常值过滤
+        # 余额级别的异常值过滤
         room_data = self._filter_outliers_with_MAD(room_data, threshold=3.0, window_size=10)
-        
         if len(room_data) < 2:
             return {"code": 102, "info": f"过滤异常值后数据点不足 (少于2个)，无法计算消耗"}
 
         # --- 1. 计算每个有效时间段的消耗率和时间中点 ---
-        consumption_rates = []
-        midpoint_timestamps = []
-        time_period_durations_day = [] # 用于设置柱状图宽度
-
+        segments = []
         for i in range(len(room_data) - 1):
             start_point = room_data[i]
-            end_point = room_data[i+1]
+            end_point = room_data[i + 1]
 
-            # 过滤掉value上升的时间段 (充电)
+            # 过滤掉 value 上升的时间段 (充电)
             if start_point["value"] < end_point["value"]:
                 continue
 
@@ -483,38 +478,67 @@ class Elect_plot:
             t_start = datetime.strptime(start_point["timestamp"], self.TIME_FORMAT)
             t_end = datetime.strptime(end_point["timestamp"], self.TIME_FORMAT)
             duration_hours = (t_end - t_start).total_seconds() / 3600
-            
-            # 避免除以零
+
             if duration_hours <= 0:
                 continue
 
-            # 计算平均每小时消耗率
+            # 平均每小时消耗率
             rate = consumption / duration_hours
-            consumption_rates.append(rate)
 
-            # 每个时间段，取中间的时间点作为该数据的时间点
+            # 时间段中点
             midpoint = t_start + (t_end - t_start) / 2
-            midpoint_timestamps.append(midpoint)
-            
-            # 记录以“天”为单位的时间段长度，用于柱状图宽度
-            time_period_durations_day.append(duration_hours / 24.0)
 
-        if not consumption_rates:
-            return {"code": 103, "info": f"房间「{room_name}」在近 {time_span} 小时内未找到有效的电费消耗记录 (可能充值)"}
+            segments.append(
+                {
+                    "timestamp": midpoint,
+                    "rate": rate,
+                    "duration_hours": duration_hours,
+                }
+            )
 
-        # 加一个滑动平均曲线
-        consumption_series = pd.Series(consumption_rates, index=midpoint_timestamps).sort_index()
-        # 确保窗口大小是奇数，并且不超过数据点总数
-        if moving_avg_window % 2 == 0:
-            moving_avg_window += 1 # 保证为奇数以使中心对齐
-        window_size = min(moving_avg_window, len(consumption_series))
-        if window_size < 3: window_size = 3 # 最小窗口为3
-        # 计算滑动平均。center=True使窗口中心对齐当前点
-        # min_periods=1允许在数据点不足窗口大小时也计算
-        trend_series = consumption_series.rolling(window=window_size, center=True, min_periods=1).mean()
-        
+        if not segments:
+            return {"code": 103, "info": f"房间「{room_name}」在近 {time_span} 小时内未找到有效的电费消耗记录 (可能充值)"
+                    }
 
-        # --- 3. 绘图 ---
+        original_count = len(segments)
+
+        # --- 2. 对消耗率段做二次过滤（时长 & rate 异常） ---
+        segments = self._filter_consumption_segments(segments)
+        filtered_count = len(segments)
+
+        if not segments:
+            return {"code": 103, "info": f"过滤异常段后未找到有效的电费消耗记录"}
+
+        # 把过滤后的段拆成绘图所需的几个数组
+        consumption_rates = [seg["rate"] for seg in segments]
+        midpoint_timestamps = [seg["timestamp"] for seg in segments]
+        time_period_durations_day = [seg["duration_hours"] / 24.0 for seg in segments]
+
+        # --- 3. 生成趋势线（与 plot_history 风格一致） ---
+        # 构造兼容 _generate_smooth_curve 的数据结构
+        trend_data = [
+            {"timestamp": ts, "value": rate}
+            for ts, rate in zip(midpoint_timestamps, consumption_rates)
+        ]
+
+        # 曲线1：穿点（PCHIP + raw）
+        x_smooth_raw, y_smooth_raw = self._generate_smooth_curve(
+            trend_data,
+            method="pchip",
+            points_count=300,
+            trend_mode="raw",
+        )
+
+        # 曲线2：趋势线（PCHIP + MA）
+        x_smooth_ma, y_smooth_ma = self._generate_smooth_curve(
+            trend_data,
+            method="pchip",
+            points_count=300,
+            trend_mode="ma",
+            ma_window=max(3, moving_avg_window),
+        )
+
+        # --- 4. 绘图 ---
         font_path = os.path.join("assets", "fonts", "YaHei Ubuntu Mono.ttf")
         if not os.path.exists(font_path):
             pylog.error(f"字体文件 '{font_path}' 在项目目录中未找到！")
@@ -524,41 +548,96 @@ class Elect_plot:
         sns.set_theme(style="whitegrid")
         fig, ax = plt.subplots(figsize=(12, 7))
 
-        # 绘制柱状图
-        # print(consumption_rates)
-        # print(midpoint_timestamps)
-        ax.bar(midpoint_timestamps, consumption_rates, width=[w * 0.8 for w in time_period_durations_day], 
-               label="每小时平均消耗率", color='skyblue', edgecolor='none')
-        # 绘制滑动平均趋势线
-        ax.plot(trend_series.index, trend_series.values, color='lightcoral', linestyle='--', 
-                linewidth=2.5, marker='o', markersize=4, label=f"消耗趋势")
-        
-        
+        # 柱状图：每小时平均消耗率
+        ax.bar(
+            midpoint_timestamps,
+            consumption_rates,
+            width=[w * 0.8 for w in time_period_durations_day],
+            label="每小时平均消耗率",
+            color="skyblue",
+            edgecolor="none",
+        )
+
+        # 曲线1：穿点平滑曲线（PCHIP + raw）
+        ax.plot(
+            x_smooth_raw,
+            y_smooth_raw,
+            label="消耗变化曲线",
+            color="royalblue",
+            linewidth=2,
+        )
+
+        # 曲线2：趋势线（PCHIP + MA，细虚线）
+        ax.plot(
+            x_smooth_ma,
+            y_smooth_ma,
+            label="消耗趋势",
+            color="lightcoral",
+            linewidth=1.8,
+            linestyle="--",
+            alpha=0.9,
+        )
+
         # 格式化图表
-        ax.set_title(f'房间「{room_name}」近 {time_span} 小时电费消耗率', fontproperties=my_font, fontsize=16, pad=20)
+        ax.set_title(
+            f'房间「{room_name}」近 {time_span} 小时电费消耗率',
+            fontproperties=my_font,
+            fontsize=16,
+            pad=20,
+        )
         ax.set_xlabel("时间段中点", fontproperties=my_font, fontsize=12)
         ax.set_ylabel("每小时电费消耗 (元/小时)", fontproperties=my_font, fontsize=12)
         ax.legend(prop=my_font)
-        ax.grid(True, which='both', linestyle='--', linewidth=0.5, axis='y') # 只在y轴显示网格
+        ax.grid(True, which="both", linestyle="--", linewidth=0.5, axis="y")
 
-        # 格式化X轴的时间显示
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
+        # 右下角标注过滤信息
+        removed_segments = original_count - filtered_count
+        if removed_segments > 0:
+            ax.text(
+                0.99,
+                0.02,
+                f"过滤 {removed_segments} 段异常消耗",
+                transform=ax.transAxes,
+                ha="right",
+                va="bottom",
+                fontsize=9,
+                color="#888888",
+                style="italic",
+                fontdict={"fontproperties": my_font}
+            )
+        else:
+            ax.text(
+                0.99,
+                0.02,
+                "无异常消耗段",
+                transform=ax.transAxes,
+                ha="right",
+                va="bottom",
+                fontsize=9,
+                color="#888888",
+                style="italic",
+                fontdict={"fontproperties": my_font}
+            )
+
+        # 格式化 X 轴时间显示
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %H:%M"))
         fig.autofmt_xdate()
 
-        # --- 4. 保存图片 ---
+        # --- 5. 保存图片 ---
         try:
             os.makedirs(self.PLOT_DIR, exist_ok=True)
         except OSError as e:
             pylog.error(f"创建目录 '{self.PLOT_DIR}' 失败: {e}")
-            return {"code": 120, "info": f"创建图片目录失败"}
-        
+            return {"code": 120, "info": "创建图片目录失败"}
+
         safe_room_name = room_name.replace(" ", "_")
-        timestamp_str = now_time.strftime('%Y%m%d_%H%M%S')
-        # 文件名添加 _consumption 后缀以作区分
-        filepath = os.path.join(self.PLOT_DIR, f"{safe_room_name}_consumption_{timestamp_str}.png")
+        timestamp_str = now_time.strftime("%Y%m%d_%H%M%S")
+        filepath = os.path.join(
+            self.PLOT_DIR, f"{safe_room_name}_consumption_{timestamp_str}.png"
+        )
 
         try:
-            plt.savefig(filepath, dpi=200, bbox_inches='tight')
+            plt.savefig(filepath, dpi=200, bbox_inches="tight")
             pylog.info(f"成功绘制并保存电费消耗柱状图: {filepath}")
         except Exception as e:
             pylog.error(f"保存图片 '{filepath}' 失败: {e}")
@@ -567,4 +646,50 @@ class Elect_plot:
             plt.close(fig)
 
         return {"code": 100, "info": "绘图成功", "path": filepath}
+
+    def _filter_consumption_segments(
+        self,
+        segments: List[Dict],
+        min_duration_hours: float = 0.25,
+        mad_threshold: float = 3.0,
+    ) -> List[Dict]:
+        """
+        对分段消耗率进行二次过滤：
+        - 过滤掉时间过短的段 (duration < min_duration_hours)
+        - 使用 MAD 在 rate 空间过滤异常高/低的段
+        """
+        if not segments:
+            return []
+
+        # 先按时长过滤
+        duration_filtered = [
+            seg for seg in segments if seg["duration_hours"] >= min_duration_hours
+        ]
+        if len(duration_filtered) < 3:
+            # 如果过滤后太少，就直接返回按时长过滤的结果（不做 MAD）
+            return duration_filtered
+
+        # 对 rate 使用 MAD 过滤
+        rates = np.array([seg["rate"] for seg in duration_filtered], dtype=float)
+        median_val = np.median(rates)
+        mad = np.median(np.abs(rates - median_val))
+
+        if mad == 0:
+            # 所有段都几乎一样，直接返回
+            return duration_filtered
+
+        lower_bound = median_val - mad_threshold * mad
+        upper_bound = median_val + mad_threshold * mad
+
+        filtered = []
+        for seg, rate in zip(duration_filtered, rates):
+            if lower_bound <= rate <= upper_bound:
+                filtered.append(seg)
+            else:
+                pylog.info(
+                    f"过滤消耗异常段: 时间中心={seg['timestamp']}, rate={rate:.2f}, "
+                    f"区间=[{lower_bound:.2f}, {upper_bound:.2f}]"
+                )
+
+        return filtered
     
