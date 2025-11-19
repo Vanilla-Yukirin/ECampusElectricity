@@ -71,7 +71,7 @@ def main():
     
     try:
         # plot_history 需要传入房间名和时间范围，它会自己读取 his.json
-        result = plotter.plot_history(test_room, time_span=48)
+        result = plotter.plot_history(test_room, time_span=480)
         
         if result["code"] == 100:
             print(f"✓ 图表生成成功！")
@@ -90,7 +90,7 @@ def main():
         
         # 测试消耗柱状图
         print("\n[7] 生成电费消耗柱状图...")
-        result2 = plotter.plot_consumption_histogram(test_room, time_span=48)
+        result2 = plotter.plot_consumption_histogram(test_room, time_span=480)
         
         if result2["code"] == 100:
             print(f"✓ 柱状图生成成功！")
