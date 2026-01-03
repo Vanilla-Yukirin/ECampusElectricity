@@ -453,7 +453,7 @@ class ECampusElectricity:
             return self.send_alert(subject, content, recipients)
         return False
 
-    def send_alert(self, subject: str, content: str, recipients: List[str]) -> bool:
+    def send_alert(self, subject: str, content: str, recipients: List[str], subtype: str = "plain") -> bool:
         """发送告警邮件"""
         try:
             if self.config.get("use_tls", False):
@@ -471,7 +471,7 @@ class ECampusElectricity:
                 )
 
             server.login(self.config["smtp_user"], self.config["smtp_pass"])
-            msg = MIMEText(content, "plain", "utf-8")
+            msg = MIMEText(content, subtype, "utf-8")
             msg["Subject"] = Header(subject, "utf-8").encode()
             msg["From"] = formataddr(
                 (

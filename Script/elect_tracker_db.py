@@ -215,7 +215,14 @@ retry_queue = RetryQueue()
 # 初始化电费查询服务
 electricity_service = ECampusElectricity({
     "shiroJID": settings.SHIRO_JID or "",
-    "floor_offset_file": None
+    "floor_offset_file": None,
+    # SMTP
+    "smtp_server": settings.SMTP_SERVER,
+    "smtp_port": settings.SMTP_PORT,
+    "smtp_user": settings.SMTP_USER,
+    "smtp_pass": settings.SMTP_PASS,
+    "from_email": settings.FROM_EMAIL,
+    "use_tls": settings.USE_TLS,
 })
 
 
@@ -504,6 +511,76 @@ async def main():
                         
                         # 清理旧的历史记录
                         cleanup_old_history(session, sub_id)
+                        
+                        # 检查是否需要发送告警
+                        if subscription.email_recipients and new_value < subscription.threshold:
+                            subject = f"【电费告警】{subscription.room_name} 余额不足 {subscription.threshold}元"
+                            
+                            # HTML 邮件内容
+                            content = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        body {{ font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f6f6f6; margin: 0; padding: 0; }}
+        .container {{ max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); margin-top: 20px; margin-bottom: 20px; }}
+        .header {{ background-color: #df9298; color: #ffffff; padding: 20px; text-align: center; }}
+        .header h1 {{ margin: 0; font-size: 24px; }}
+        .content {{ padding: 30px; color: #333333; }}
+        .info-item {{ margin-bottom: 15px; font-size: 16px; line-height: 1.6; }}
+        .label {{ color: #666666; font-weight: bold; margin-right: 10px; }}
+        .value {{ font-weight: 500; }}
+        .highlight {{ color: #ff4d4f; font-weight: bold; font-size: 24px; }}
+        .footer {{ background-color: #f8f9fa; padding: 15px; text-align: center; color: #999999; font-size: 12px; border-top: 1px solid #eeeeee; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>电费余额告警</h1>
+        </div>
+        <div class="content">
+            <p>您好，您订阅的房间电费余额已低于设定阈值，请及时充值以免断电。</p>
+            
+            <div class="info-item">
+                <span class="label">房间名称:</span>
+                <span class="value">{subscription.room_name}</span>
+            </div>
+            
+            <div class="info-item">
+                <span class="label">当前余额:</span>
+                <span class="value highlight">{new_value} 元</span>
+            </div>
+            
+            <div class="info-item">
+                <span class="label">告警阈值:</span>
+                <span class="value">{subscription.threshold} 元</span>
+            </div>
+            
+            <div class="info-item">
+                <span class="label">检测时间:</span>
+                <span class="value">{get_shanghai_time().strftime('%Y-%m-%d %H:%M:%S')}</span>
+            </div>
+
+            <p style="margin-top: 30px; font-size: 14px; color: #888;">
+                * 此邮件由 ECampusElectricity 自动发送，请勿回复。
+            </p>
+        </div>
+        <div class="footer">
+            &copy; {datetime.datetime.now().year} ECampusElectricity
+        </div>
+    </div>
+</body>
+</html>
+"""
+                            try:
+                                if electricity_service.send_alert(subject, content, subscription.email_recipients, subtype="html"):
+                                    pylog.info(f"已向 {subscription.room_name} 的订阅者发送告警邮件")
+                                else:
+                                    pylog.warning(f"向 {subscription.room_name} 发送告警邮件失败")
+                            except Exception as e:
+                                pylog.error(f"发送告警邮件异常: {e}")
                         
                     except Exception as e:
                         pylog.error(f"处理房间 '{subscription.room_name}' (ID: {getattr(subscription, 'id', None)}) 时发生错误，已跳过。错误详情: {e}")
