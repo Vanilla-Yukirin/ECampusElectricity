@@ -67,6 +67,7 @@ class Settings(BaseSettings):
         env_file = str(ENV_FILE)
         env_file_encoding = "utf-8"
         case_sensitive = True
+        extra = "ignore"  # 忽略额外的环境变量
 
 
 settings = Settings()

@@ -38,6 +38,7 @@ export default function SubscriptionsPage() {
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [formData, setFormData] = useState({
     building_name: '',
     room_number: '',
@@ -84,14 +85,23 @@ export default function SubscriptionsPage() {
         .map(email => email.trim())
         .filter(email => email);
       
-      await api.post('/api/subscriptions', {
-        building_name: formData.building_name.trim(),
-        room_number: formData.room_number.trim(),
-        threshold: formData.threshold,
-        email_recipients: emailList,
-      });
+      if (editingId) {
+        await api.put(`/api/subscriptions/${editingId}`, {
+          room_name: `${formData.building_name.trim()} ${formData.room_number.trim()}`.trim(),
+          threshold: formData.threshold,
+          email_recipients: emailList,
+        });
+      } else {
+        await api.post('/api/subscriptions', {
+          building_name: formData.building_name.trim(),
+          room_number: formData.room_number.trim(),
+          threshold: formData.threshold,
+          email_recipients: emailList,
+        });
+      }
       
       setDialogOpen(false);
+      setEditingId(null);
       setFormData({
         building_name: '',
         room_number: '',
@@ -100,7 +110,7 @@ export default function SubscriptionsPage() {
       });
       fetchSubscriptions();
     } catch (error: any) {
-      alert(error.response?.data?.detail || '创建订阅失败');
+      alert(error.response?.data?.detail || (editingId ? '更新订阅失败' : '创建订阅失败'));
     }
   };
 
@@ -171,9 +181,9 @@ export default function SubscriptionsPage() {
               </DialogTrigger>
               <DialogContent className="max-w-2xl">
                 <DialogHeader>
-                  <DialogTitle>添加新订阅</DialogTitle>
+                  <DialogTitle>{editingId ? '编辑订阅' : '添加新订阅'}</DialogTitle>
                   <DialogDescription>
-                    填写房间信息以创建新的电费监控订阅
+                    填写房间信息以创建或更新电费监控订阅
                   </DialogDescription>
                 </DialogHeader>
                 <form onSubmit={handleSubmit}>
@@ -311,6 +321,28 @@ export default function SubscriptionsPage() {
                           >
                             <Trash2 className="h-4 w-4 mr-2" />
                             {sub.is_owner ? '删除' : '无权限'}
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={!sub.is_owner}
+                            onClick={() => {
+                              // open edit dialog
+                              const parts = (sub.room_name || '').split(/\s+/);
+                              const building = parts.slice(0, -1).join(' ') || parts[0] || '';
+                              const room = parts.slice(-1)[0] || '';
+                              setFormData({
+                                building_name: building,
+                                room_number: room,
+                                threshold: sub.threshold || 20.0,
+                                email_recipients: (sub.email_recipients || []).join(', '),
+                              });
+                              setEditingId(sub.id);
+                              setDialogOpen(true);
+                            }}
+                            className="transition-all hover:scale-105 ml-2"
+                          >
+                            编辑
                           </Button>
                         </div>
                       </motion.div>

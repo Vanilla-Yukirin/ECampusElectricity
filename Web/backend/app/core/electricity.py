@@ -484,10 +484,12 @@ class ECampusElectricity:
             server.sendmail(self.config["from_email"], recipients, msg.as_string())
             return True
         except smtplib.SMTPServerDisconnected as e:
-            logger.error("SMTP 服务器意外断开：%s", e)
+            # 记录完整堆栈信息，便于排查 SMTP 连接断开原因
+            logger.exception("SMTP 服务器意外断开：%s", e)
             return False
         except Exception as e:  # pragma: no cover - 捕获并记录异常
-            logger.error("发送邮件异常：%s", e)
+            # 记录完整堆栈信息，包含 smtplib 抛出的原始异常
+            logger.exception("发送邮件异常：%s", e)
             return False
 
     def _error_response(self, data: Dict[str, Any]) -> Dict[str, Any]:

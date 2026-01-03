@@ -102,6 +102,8 @@
    - 填入项目根目录的 `.env` 文件
    - 或在 WebUI 的"设置"页面配置
    - 详见 [统一配置管理指南](CONFIG_MANAGEMENT.md)
+  
+  注意：本项目已统一配置源为项目根目录的 `.env`（所有子目录中的 `.env` 已被指向根目录的符号链接以避免重复）。如果你在本地手动修改子目录下的 `.env`，请改为编辑根目录的 `.env`，或通过 WebUI 的设置页面保存配置以同步到根目录。
 
 ### Web 版本快速开始
 
@@ -135,11 +137,11 @@ cd Web
 # 2. 一键设置环境（自动安装所有依赖）
 npm run setup
 
-# 3. 配置环境变量（如果根目录没有 .env）
-# 注意: 建议使用根目录的统一配置
-cd backend
-cp ../../.env.example ../../.env
-nano ../../.env  # 编辑配置
+# 3. 配置环境变量（推荐使用根目录统一配置）
+# 说明: 请在项目根目录创建并编辑 `.env`（或复制模板 `.env.example`），子目录的 `.env` 文件会引用根目录的 `.env`：
+cd /root/pro/ECampusElectricity
+cp .env.example .env
+nano .env  # 编辑配置（根目录作为唯一配置源）
 
 # 4. 初始化数据库
 npm run db:init
@@ -312,9 +314,9 @@ cd frontend
 npm run build
 cd ../..
 
-# 3. 配置环境变量
-cp Web/backend/.env.example Web/backend/.env
-# 编辑 Web/backend/.env
+# 配置环境变量（统一使用根目录 .env）
+# 如果你之前在 `Web/backend/.env` 中配置，请把它的值合并到根目录 `.env`，然后编辑根目录 `.env`。
+# 现在 `Web/backend/.env` 会作为根目录 `.env` 的符号链接（统一配置源）
 
 # 4. 配置 Bot（如需要）
 cp Bot/config.yaml.example Bot/config.yaml
@@ -367,7 +369,7 @@ pm2 startup
    npm run build
    ```
 
-2. **配置环境变量**: 确保 `backend/.env` 中的生产环境配置正确
+2. **配置环境变量**: 确保项目根目录的 `.env` 中的生产环境配置正确（`Web/backend/.env` 为根目录 `.env` 的符号链接）
 
 3. **启动服务**: 使用生产模式启动脚本或配置进程管理器（如 systemd、supervisor）
 
@@ -532,7 +534,7 @@ python src/bot/Elect_bot.py
 ### Web 版本注意事项
 
 1. **数据库配置**: 确保 PostgreSQL 已正确安装并运行
-2. **环境变量**: 首次运行前必须配置 `backend/.env` 文件
+2. **环境变量**: 首次运行前必须配置项目根目录的 `.env` 文件（`backend/.env` 已指向根目录 `.env`）
 3. **数据库初始化**: 首次运行前必须执行 `npm run db:init` 初始化数据库
 4. **端口占用**: 确保 4000（前端）和 8000（后端）端口未被占用
 
