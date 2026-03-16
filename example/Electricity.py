@@ -10,6 +10,7 @@ class ECampusElectricity:
         self.config = {
             'shiroJID': 'df8bde3a-06e5-435d-b7a8-1026e4d8c331',
             'ymId': '2502567889956864141',
+            'platform': 'DING_TALK_H5',
             # 邮件服务器配置
             'smtp_server': 'smtp.qq.com',
             'smtp_port': 465,  # 使用SSL端口
@@ -79,13 +80,23 @@ class ECampusElectricity:
             'roomCode': room_code
         })
         if data.get('success'):
+            room_data = data.get('data', {})
+            surplus_value = room_data.get('amount')
+            if surplus_value is None:
+                surplus_value = room_data.get('surplus', 0)
             return {
                 'error': 0,
                 'data': {
-                    'surplus': data['data']['amount'],
-                    'roomName': data['data']['displayRoomName']
+                    'surplus': surplus_value,
+                    'roomName': room_data.get('displayRoomName') or room_data.get('roomName', '')
                 }
             }
+        return self._error_response(data)
+
+    def query_bind(self, bind_type=1):
+        data = self._request('queryBind', {'bindType': bind_type})
+        if data.get('success'):
+            return {'error': 0, 'data': data.get('rows', [])}
         return self._error_response(data)
 
     def _error_response(self, data):
@@ -102,17 +113,18 @@ class ECampusElectricity:
     def _request(self, uri, params):
         url = f'https://application.xiaofubao.com/app/electric/{uri}'
         params.update({
-            'ymId': self.config['ymId'],
-            'platform': 'YUNMA_APP'
+            'platform': self.config.get('platform', 'DING_TALK_H5')
         })
         headers = {
-            'Cookie': f'shiroJID={self.config["shiroJID"]}'
+            'Cookie': f'shiroJID={self.config["shiroJID"]}',
+            'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+            'X-Requested-With': 'XMLHttpRequest',
         }
         
         try:
             response = requests.post(
                 url,
-                params=params,
+                data=params,
                 headers=headers,
                 #verify=False
             )

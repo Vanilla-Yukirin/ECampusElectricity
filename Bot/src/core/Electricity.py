@@ -206,6 +206,7 @@ class ECampusElectricity:
     def __init__(self, config=None):
         self.config = {
             'shiroJID': '',
+            'platform': 'DING_TALK_H5',
             'alert_threshold': 20.0 
         }
         if config:
@@ -269,13 +270,23 @@ class ECampusElectricity:
             'roomCode': room_code
         })
         if data.get('success'):
+            room_data = data.get('data', {})
+            surplus_value = room_data.get('amount')
+            if surplus_value is None:
+                surplus_value = room_data.get('surplus', 0)
             return {
                 'error': 0,
                 'data': {
-                    'surplus': data['data']['amount'],
-                    'roomName': data['data']['displayRoomName']
+                    'surplus': surplus_value,
+                    'roomName': room_data.get('displayRoomName') or room_data.get('roomName', '')
                 }
             }
+        return self._error_response(data)
+
+    def query_bind(self, bind_type=1):
+        data = self._request('queryBind', {'bindType': bind_type})
+        if data.get('success'):
+            return {'error': 0, 'data': data.get('rows', [])}
         return self._error_response(data)
 
     def _error_response(self, data):
@@ -286,26 +297,58 @@ class ECampusElectricity:
 
     def _errcode(self, code):
         return {
-            233: 'shiroJID无效',
+            233: '登录态失效（shiroJID 无效或过期），请在手机端重新抓取并更新',
+            598: '接口返回非 JSON（可能命中了授权页/容器页），请在手机端抓取最新 shiroJID',
         }.get(code, '未知错误')
 
     def _request(self, uri, params):
+        shiro_jid = str(self.config.get('shiroJID', '')).strip()
+        if not shiro_jid:
+            return {
+                'success': False,
+                'statusCode': 233,
+                'message': '未配置 shiroJID，请在手机端（钉钉/易校园）抓取 Cookie 后更新配置',
+            }
+
         url = f'https://application.xiaofubao.com/app/electric/{uri}'
         params.update({
-            'platform': 'YUNMA_APP'
+            'platform': self.config.get('platform', 'DING_TALK_H5')
         })
         headers = {
-            'Cookie': f'shiroJID={self.config["shiroJID"]}'
+            'Cookie': f'shiroJID={shiro_jid}',
+            'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+            'X-Requested-With': 'XMLHttpRequest',
         }
         
         try:
             response = requests.post(
                 url,
-                params=params,
+                data=params,
                 headers=headers,
                 #verify=False
             )
-            return response.json()
+            try:
+                data = response.json()
+                if isinstance(data, dict):
+                    return data
+                return {
+                    'success': False,
+                    'statusCode': 598,
+                    'message': f'接口返回了非对象 JSON: {type(data).__name__}'
+                }
+            except ValueError:
+                body_text = response.text or ''
+                body_preview = ' '.join(body_text.split())[:180]
+                message = '接口返回非 JSON，请检查网络或登录态'
+                if '容器不存在' in body_text:
+                    message = '授权容器不可用（容器不存在）。请改为手机端抓取 shiroJID 并更新配置'
+                return {
+                    'success': False,
+                    'statusCode': 598,
+                    'message': message,
+                    'http_status': response.status_code,
+                    'raw_text': body_preview,
+                }
         except Exception as e:
             print(f"Request Error: {e}")
             return {'success': False}

@@ -16,3 +16,4 @@ exec "$SCRIPT_DIR/Web/backend/venv/bin/python" elect_tracker_db.py
 
 
 
+
